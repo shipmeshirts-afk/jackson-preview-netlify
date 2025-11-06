@@ -5,6 +5,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Design Prompt Previewer</title>
   <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Allow external images + inline script so previews load everywhere -->
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self' 'unsafe-inline' https: data: blob:;
+                 img-src * data: blob:;">
 </head>
 
 <body class="bg-gray-100 text-gray-900 p-6">
@@ -41,35 +45,94 @@
     </button>
 
     <div class="border bg-white rounded h-[500px] flex items-center justify-center">
-      <img id="preview" src="" class="max-h-full max-w-full" alt="Preview" />
+      <img id="preview" src="" class="max-h-full max-w-full"
+           alt="Preview" referrerpolicy="no-referrer" />
     </div>
 
+    <p id="openLinkWrap" class="text-xs text-blue-700 underline text-center hidden">
+      <a id="openLink" href="#" target="_blank" rel="noreferrer">Open image in a new tab</a>
+    </p>
+
     <p class="text-xs text-gray-500 text-center">
-      Previews are for concepting only. Final production artwork will be prepared by Jackson Signs & T-Shirts.
+      Previews are for concepting only. Final production artwork will be prepared by Jackson Signs &amp; T-Shirts.
     </p>
   </div>
 
 <script>
-document.getElementById("generateBtn").addEventListener("click", async () => {
-  const demoMode = document.getElementById("demoMode").checked;
-  const prompt = document.getElementById("prompt").value;
-  const style = document.getElementById("style").value;
-  const size = document.getElementById("size").value;
+(function () {
+  const btn = document.getElementById("generateBtn");
+  const img = document.getElementById("preview");
+  const openWrap = document.getElementById("openLinkWrap");
+  const openLink = document.getElementById("openLink");
 
-  const preview = document.getElementById("preview");
-  preview.src = "";
-
-  if (!prompt) return alert("Enter a prompt first");
-
-  if (demoMode) {
-    preview.src = `https://source.unsplash.com/${size}/?${encodeURIComponent(prompt)}`;
-    return;
+  // Helper: show link under the preview
+  function showOpenLink(url) {
+    if (!url) { openWrap.classList.add("hidden"); return; }
+    openLink.href = url;
+    openWrap.classList.remove("hidden");
   }
 
-  const response = await fetch(`/.netlify/functions/generate?prompt=${encodeURIComponent(prompt)}&style=${encodeURIComponent(style)}&size=${size}`);
-  const data = await response.json();
-  preview.src = data.url || data.fallback;
-});
+  btn.addEventListener("click", async () => {
+    const demoMode = document.getElementById("demoMode").checked;
+    const prompt = document.getElementById("prompt").value.trim();
+    const style = document.getElementById("style").value;
+    const size = document.getElementById("size").value;
+    const seed = (document.getElementById("seed").value || "").trim();
+
+    img.src = "";
+    img.removeAttribute("data-fallback");
+    showOpenLink("");
+
+    if (!prompt) {
+      alert("Enter a prompt first");
+      return;
+    }
+
+    // DEMO MODE: client-side Unsplash Source with Picsum fallback
+    if (demoMode) {
+      const primary = `https://source.unsplash.com/${size}/?${encodeURIComponent(prompt)}`;
+      const demoFallback = `https://picsum.photos/seed/${encodeURIComponent((prompt || "logo") + (seed ? "-" + seed : ""))}/${size.replace("x","/")}`;
+
+      // set fallback before setting src so onerror can use it
+      img.setAttribute("data-fallback", demoFallback);
+      img.onerror = () => {
+        const fb = img.getAttribute("data-fallback");
+        if (fb && img.src !== fb) img.src = fb;
+      };
+
+      img.src = primary;
+      showOpenLink(primary);
+      return;
+    }
+
+    // LIVE MODE: call Netlify function
+    try {
+      const res = await fetch(
+        `/.netlify/functions/generate?prompt=${encodeURIComponent(prompt)}&style=${encodeURIComponent(style)}&size=${encodeURIComponent(size)}&seed=${encodeURIComponent(seed)}`
+      );
+      const data = await res.json();
+
+      const primaryUrl = data.url;
+      const fallbackUrl = data.fallback;
+
+      // set fallback first so onerror can switch
+      if (fallbackUrl) img.setAttribute("data-fallback", fallbackUrl);
+
+      img.onerror = () => {
+        const fb = img.getAttribute("data-fallback");
+        if (fb && img.src !== fb) {
+          img.src = fb;
+          showOpenLink(fb);
+        }
+      };
+
+      img.src = primaryUrl || fallbackUrl || "";
+      showOpenLink(primaryUrl || fallbackUrl || "");
+    } catch (err) {
+      alert("Error contacting generator: " + (err?.message || err));
+    }
+  });
+})();
 </script>
 
 </body>
