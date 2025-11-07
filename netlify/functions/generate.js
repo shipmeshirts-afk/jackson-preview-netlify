@@ -1,24 +1,67 @@
 // netlify/functions/generate.js
-export async function handler(event) {
+// Uses OpenAI Images if OPENAI_API_KEY is set, else falls back to placeholder URLs.
+
+const SIZE_MAP = new Set(["1024x1024", "1024x1536", "1536x1024", "512x512", "2048x2048"]);
+
+exports.handler = async (event) => {
   try {
     const isGet = event.httpMethod === "GET";
     const params = isGet ? (event.queryStringParameters || {}) : JSON.parse(event.body || "{}");
-    let { prompt = "", style = "", size = "1024x1024", seed = "" } = params;
 
-    const clean = (s) => (s || "").toString().trim();
-    prompt = clean(prompt); style = clean(style); size = clean(size); seed = clean(seed);
+    let prompt = (params.prompt || "").toString().trim();
+    const style = (params.style || "").toString().trim();
+    const size = SIZE_MAP.has((params.size || "").toString()) ? params.size.toString() : "1024x1024";
+    const seed = (params.seed || "").toString().trim();
 
-    const keywords = encodeURIComponent(`${prompt} ${style}`.trim() || "logo");
-    const sig = seed || Math.floor(Math.random() * 1e9);
-    const url = `https://source.unsplash.com/${size}/?${keywords}&sig=${sig}`;
-    const fallback = `https://picsum.photos/seed/${encodeURIComponent((prompt||"logo")+"-"+sig)}/${size.replace("x","/")}`;
+    const [w, h] = size.split("x").map(n => parseInt(n, 10) || 1024);
+
+    // ----- If OPENAI key is present, try real AI generation -----
+    const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+    if (OPENAI_API_KEY && prompt) {
+      const guidedPrompt = `${style || "clean vector logo"}, flat colors, high contrast, simple shapes, crisp edges, no background, centered mark`;
+
+      try {
+        const resp = await fetch("https://api.openai.com/v1/images/generations", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${OPENAI_API_KEY}`,
+          },
+          body: JSON.stringify({
+            model: "gpt-image-1",
+            prompt: guidedPrompt,
+            size: `${w}x${h}`,
+            n: 1,
+            response_format: "b64_json",
+          }),
+        });
+
+        if (!resp.ok) throw new Error(`OpenAI error ${resp.status}: ${await resp.text()}`);
+        const data = await resp.json();
+        const b64 = data?.data?.[0]?.b64_json;
+
+        if (b64) {
+          return {
+            statusCode: 200,
+            body: JSON.stringify({ dataUrl: `data:image/png;base64,${b64}` }),
+          };
+        }
+      } catch (err) {
+        console.error("OpenAI generation failed.", err.message);
+      }
+    }
+
+    // ----- Placeholder fallback -----
+    const query = encodeURIComponent(`${prompt} ${style}`.trim());
+    const unsplash = `https://source.unsplash.com/${w}x${h}/?${query}`;
+    const proxied = `https://images.weserv.nl/?url=${encodeURIComponent(unsplash.replace(/^https?:\/\//, ""))}`;
+    const fallback = `https://picsum.photos/seed/${encodeURIComponent(prompt || "logo") + (seed ? "-" + seed : "")}/${w}/${h}`;
 
     return {
       statusCode: 200,
-      headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
-      body: JSON.stringify({ url, fallback })
+      body: JSON.stringify({ url: proxied, fallback }),
     };
   } catch (err) {
-    return { statusCode: 400, body: err?.message || "Bad Request" };
+    return { statusCode: 400, body: err.message || "Bad Request" };
   }
-}
+};
