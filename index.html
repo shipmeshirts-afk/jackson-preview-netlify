@@ -1,93 +1,77 @@
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Design Prompt Previewer</title>
-  <script src="https://cdn.tailwindcss.com"></script>
-</head>
+// netlify/functions/generate.js
+// Uses OpenAI Images if OPENAI_API_KEY is set, else falls back to placeholder URLs.
 
-<body class="bg-gray-100 text-gray-900 p-6">
-  <div class="max-w-4xl mx-auto space-y-6">
-    <h1 class="text-3xl font-bold">Design Prompt Previewer</h1>
+const SIZE_MAP = new Set(["1024x1024", "1024x1536", "1536x1024", "512x512", "2048x2048"]);
 
-    <label class="flex items-center space-x-2">
-      <input id="demoMode" type="checkbox" class="h-4 w-4" />
-      <span>Demo mode (no backend)</span>
-    </label>
+exports.handler = async (event) => {
+  try {
+    const isGet = event.httpMethod === "GET";
+    const params = isGet ? (event.queryStringParameters || {}) : JSON.parse(event.body || "{}");
 
-    <textarea id="prompt" class="w-full p-3 rounded border" rows="3"
-      placeholder="Enter design prompt..."></textarea>
+    let prompt = (params.prompt || "").toString().trim();
+    const style  = (params.style  || "").toString().trim();
+    const size   = SIZE_MAP.has((params.size || "").toString()) ? params.size.toString() : "1024x1024";
+    const seed   = (params.seed   || "").toString().trim();
 
-    <div class="grid grid-cols-3 gap-3">
-      <select id="style" class="p-3 border rounded">
-        <option>Clean vector logo</option>
-        <option>Bold mascot logo</option>
-        <option>Realistic patch engraving</option>
-      </select>
+    const [w, h] = size.split("x").map(n => parseInt(n, 10) || 1024);
 
-      <select id="size" class="p-3 border rounded">
-        <option>1024x1024</option>
-        <option>512x512</option>
-        <option>2048x2048</option>
-      </select>
+    // ----- If OPENAI key is present, try real AI generation -----
+    const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+    if (OPENAI_API_KEY && prompt) {
+      // steer toward logo-like outputs
+      const guidedPrompt = `${prompt} — ${style || "clean vector logo"}, flat colors, high contrast, simple shapes, crisp edges, no background, centered mark`;
 
-      <input id="seed" class="p-3 border rounded" placeholder="Seed (optional)" />
-    </div>
+      try {
+        const resp = await fetch("https://api.openai.com/v1/images/generations", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${OPENAI_API_KEY}`
+          },
+          body: JSON.stringify({
+            model: "gpt-image-1",         // OpenAI image model
+            prompt: guidedPrompt,
+            size: `${w}x${h}`,
+            n: 1,
+            response_format: "b64_json",
+            // background: "transparent"  // uncomment if supported in your plan
+          })
+        });
 
-    <button id="go" class="px-6 py-3 bg-black text-white rounded hover:bg-gray-800">
-      Generate
-    </button>
+        if (!resp.ok) {
+          const msg = await resp.text();
+          throw new Error(`OpenAI error ${resp.status}: ${msg}`);
+        }
 
-    <div class="border bg-white rounded h-[500px] flex items-center justify-center">
-      <img id="preview" class="max-h-full max-w-full" alt="Preview" referrerpolicy="no-referrer" />
-    </div>
+        const data = await resp.json();
+        const b64 = data?.data?.[0]?.b64_json;
+        if (b64) {
+          // Return a data URL that <img> can load directly
+          return {
+            statusCode: 200,
+            headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+            body: JSON.stringify({ dataUrl: `data:image/png;base64,${b64}` })
+          };
+        }
+      } catch (e) {
+        // fall through to placeholder if AI fails
+        console.error("OpenAI generation failed:", e.message);
+      }
+    }
 
-    <p id="openWrap" class="text-xs text-center mt-2 hidden">
-      <a id="openLink" class="underline text-blue-700" target="_blank" rel="noreferrer">Open image in a new tab</a>
-    </p>
-  </div>
+    // ----- Placeholder (what you have today) -----
+    const query = encodeURIComponent(`${prompt} ${style}`.trim() || "logo");
+    const unsplash = `https://source.unsplash.com/${w}x${h}/?${query}${seed ? `&sig=${seed}` : ""}`;
+    const proxied  = `https://images.weserv.nl/?url=${encodeURIComponent(unsplash.replace(/^https?:\/\//,''))}`;
+    const fallback = `https://picsum.photos/seed/${encodeURIComponent((prompt || "logo") + (seed ? "-" + seed : ""))}/${w}/${h}`;
 
-<script>
-const img = document.getElementById('preview');
-const openWrap = document.getElementById('openWrap');
-const openLink = document.getElementById('openLink');
+    return {
+      statusCode: 200,
+      headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+      body: JSON.stringify({ url: proxied, fallback })
+    };
 
-function showLink(url){ 
-  if(!url){openWrap.classList.add('hidden');return}
-  openLink.href = url; 
-  openWrap.classList.remove('hidden'); 
-}
-
-document.getElementById('go').addEventListener('click', async () => {
-  const prompt = document.getElementById('prompt').value.trim();
-  const style = document.getElementById('style').value;
-  const size = document.getElementById('size').value;
-  const seed = document.getElementById('seed').value.trim();
-  const demo = document.getElementById('demoMode').checked;
-
-  if(!prompt){ alert('Enter a prompt first'); return; }
-
-  img.src = ''; showLink('');
-
-  if(demo){
-    img.src = `https://source.unsplash.com/${size}/?${encodeURIComponent(prompt)}`;
-    showLink(img.src);
-    return;
+  } catch (err) {
+    return { statusCode: 400, body: err?.message || "Bad Request" };
   }
-
-  try{
-    const qs = new URLSearchParams({ prompt, style, size, seed }).toString();
-    const res = await fetch(`/.netlify/functions/generate?${qs}`);
-    const data = await res.json();
-
-    img.src = data.url || data.fallback || '';
-    showLink(img.src);
-  }catch(e){
-    alert("Backend unavailable - switch on Demo Mode.");
-  }
-});
-</script>
-
-</body>
-</html>
+};
