@@ -15,53 +15,57 @@ exports.handler = async (event) => {
 
     const [w, h] = size.split("x").map(n => parseInt(n, 10) || 1024);
 
-    // ----- If OPENAI key is present, try real AI generation -----
     const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
     if (OPENAI_API_KEY && prompt) {
-      const guidedPrompt = `${style || "clean vector logo"}, flat colors, high contrast, simple shapes, crisp edges, no background, centered mark`;
+      const guidedPrompt = `${style || "clean vector logo"}, flat colors, high contrast, simple shapes, crisp edges, no background, centered mark; ${prompt}`;
 
       try {
-        const resp = await fetch("https://api.openai.com/v1/images/generations", {
+        const resp = await fetch("https://api.openai.com/v1/images/edits", {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
             "Authorization": `Bearer ${OPENAI_API_KEY}`,
           },
           body: JSON.stringify({
-            model: "gpt-image-1",
             prompt: guidedPrompt,
             size: `${w}x${h}`,
-            n: 1,
             response_format: "b64_json",
           }),
         });
 
-        if (!resp.ok) throw new Error(`OpenAI error ${resp.status}: ${await resp.text()}`);
-        const data = await resp.json();
-        const b64 = data?.data?.[0]?.b64_json;
+        if (!resp.ok) {
+          const msg = await resp.text();
+          throw new Error(`OpenAI error ${resp.status}: ${msg}`);
+        }
 
+        const data = await resp.json();
+        const b64 = data.data?.[0]?.b64_json;
         if (b64) {
           return {
             statusCode: 200,
-            body: JSON.stringify({ dataUrl: `data:image/png;base64,${b64}` }),
+            headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+            body: JSON.stringify({ dataUrl: `data:image/png;base64,${b64}` })
           };
         }
-      } catch (err) {
-        console.error("OpenAI generation failed.", err.message);
+      } catch(err) {
+        console.error("OpenAI generation failed:", err);
       }
     }
 
-    // ----- Placeholder fallback -----
-    const query = encodeURIComponent(`${prompt} ${style}`.trim());
-    const unsplash = `https://source.unsplash.com/${w}x${h}/?${query}`;
-    const proxied = `https://images.weserv.nl/?url=${encodeURIComponent(unsplash.replace(/^https?:\/\//, ""))}`;
-    const fallback = `https://picsum.photos/seed/${encodeURIComponent(prompt || "logo") + (seed ? "-" + seed : "")}/${w}/${h}`;
+    // ---- FALLBACK ----
+    const encoded = encodeURIComponent(`${prompt} ${style}`.trim());
+    const fallback = `https://picsum.photos/seed/${encoded}/${w}/${h}`;
 
     return {
       statusCode: 200,
-      body: JSON.stringify({ url: proxied, fallback }),
+      headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+      body: JSON.stringify({ fallback })
     };
+
   } catch (err) {
-    return { statusCode: 400, body: err.message || "Bad Request" };
+    return {
+      statusCode: 400,
+      body: JSON.stringify({ error: err.message || "Bad Request" }),
+    };
   }
 };
